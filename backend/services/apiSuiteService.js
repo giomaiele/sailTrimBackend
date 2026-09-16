@@ -501,6 +501,125 @@ Rules:
 - Keep "{{key}}" placeholders intact.
 - Return only the JSON object.`;
 
+const CREATE_SYSTEM = `You write ONE test case for an HTTP endpoint, from a plain-language instruction.
+
+Return STRICT JSON only:
+{
+  "name": "short descriptive name",
+  "covers": "ONE plain sentence a non-technical QA lead can read, describing what this test verifies",
+  "category": "happy_path | not_found | unauthorized | invalid_input | boundary | security",
+  "method": "GET",
+  "path": "/the/path",
+  "headers": {},
+  "body": null,
+  "expectedStatus": [200],
+  "assertions": ["plain-English checks on the response"]
+}
+
+Rules:
+- Exactly one case, doing what the instruction asks — nothing more.
+- Use "{{key}}" placeholders for path params matching an available environment variable.
+- For an unauthorized case set "headers": {"Authorization": ""} so the runner strips auth.
+- "body" is null for GET/DELETE.
+- 1 to 4 assertions, each decidable from the response alone.
+- Return only the JSON object.`;
+
+/**
+ * Add ONE case to an existing suite: blank (the user fills it in) or written
+ * from a sentence. The generators only ever produce a whole suite, so without
+ * this a user who wants one more check has to regenerate everything.
+ */
+async function createCase({
+  suiteId,
+  companyId,
+  instruction = "",
+  anthropicClient = null,
+}) {
+  const suite = await ApiSuite.findOne({ _id: suiteId, companyId });
+  if (!suite) {
+    const err = new Error("Suite not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  const doc = await loadDocForCompany(suite.docId, companyId);
+
+  let next = {
+    name: "New test",
+    covers: "",
+    category: "happy_path",
+    method: doc.method || "",
+    path: doc.path || "",
+    headers: null,
+    body: null,
+    expectedStatus: [200],
+    assertions: [],
+  };
+
+  if (instruction && instruction.trim()) {
+    const client = anthropicClient || getAnthropic();
+    const resp = await client.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 1500,
+      system: CREATE_SYSTEM,
+      messages: [
+        {
+          role: "user",
+          content: JSON.stringify(
+            { endpoint: specForPrompt(doc), instruction: instruction.trim() },
+            null,
+            2
+          ),
+        },
+      ],
+    });
+    const parsed = safeParseJson(extractText(resp));
+    if (!parsed) {
+      const err = new Error("Could not understand it. Try rewording it.");
+      err.statusCode = 502;
+      throw err;
+    }
+    next = {
+      name: parsed.name || next.name,
+      covers: parsed.covers || "",
+      category: parsed.category || "happy_path",
+      method: parsed.method || "",
+      path: parsed.path || "",
+      headers: parsed.headers || null,
+      body: parsed.body ?? null,
+      expectedStatus: Array.isArray(parsed.expectedStatus)
+        ? parsed.expectedStatus
+        : [200],
+      assertions: Array.isArray(parsed.assertions) ? parsed.assertions : [],
+    };
+  }
+
+  suite.cases.push(next);
+  await suite.save();
+  return { suite, case: suite.cases[suite.cases.length - 1] };
+}
+
+/**
+ * Delete ONE case from a suite. A test written by hand or refined into
+ * something wrong has to be removable without dropping the whole suite.
+ */
+async function deleteCase({ suiteId, caseId, companyId }) {
+  const suite = await ApiSuite.findOne({ _id: suiteId, companyId });
+  if (!suite) {
+    const err = new Error("Suite not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  const c = suite.cases.id(caseId);
+  if (!c) {
+    const err = new Error("Test case not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  c.deleteOne();
+  await suite.save();
+  return { suite };
+}
+
 /**
  * Change what one case covers, from a plain instruction ("also check that it
  * rejects a duplicate email"). Mirrors the MCP refiners so both sides of the
@@ -602,12 +721,30 @@ async function listProjectSuites({ projectId, owner, repo, companyId }) {
   const scope = projectId
     ? { projectId, companyId }
     : { owner, repo, companyId };
-  return ApiSuite.find(scope).sort({ section: 1, path: 1, kind: 1 }).lean();
+  const suites = await ApiSuite.find(scope)
+    .sort({ section: 1, path: 1, kind: 1 })
+    .lean();
+
+  // Attach what the endpoint answers with. Writing a check like "the id matches
+  // the one I asked for" means knowing the field is called `id` — so the tests
+  // page shows the documented response next to the tests instead of making the
+  // user open the docs in another tab.
+  const Doc = require("../model/DocModel");
+  const docs = await Doc.find({ _id: { $in: suites.map((s) => s.docId) } })
+    .select("responses")
+    .lean();
+  const byId = new Map(docs.map((d) => [String(d._id), d]));
+  return suites.map((s) => ({
+    ...s,
+    responses: byId.get(String(s.docId))?.responses || [],
+  }));
 }
 
 module.exports = {
   sectionForDoc,
   generateSuite,
+  createCase,
+  deleteCase,
   generateSectionSuites,
   runSuite,
   refineCase,

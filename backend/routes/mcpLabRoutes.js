@@ -102,6 +102,9 @@ router.post("/projects/:id/tool-suites", protect, c.generateProjectToolSuites);
 router.get("/projects/:id/tool-suites", protect, c.listToolSuites);
 router.post("/tool-suites/:suiteId/run", protect, c.runToolSuite);
 router.post("/tool-suites/:suiteId/cases/:caseId/refine", protect, c.refineToolSuiteCase);
+// One test written by hand (blank, or from a sentence), and removing one.
+router.post("/tool-suites/:suiteId/cases", protect, c.createToolSuiteCase);
+router.delete("/tool-suites/:suiteId/cases/:caseId", protect, c.deleteToolSuiteCase);
 router.delete("/tool-suites/:suiteId", protect, c.deleteToolSuite);
 
 module.exports = router;

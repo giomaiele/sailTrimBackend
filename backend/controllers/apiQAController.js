@@ -749,6 +749,43 @@ async function refineSuiteCase(req, res) {
   }
 }
 
+// Add ONE test by hand: blank, or written from a sentence.
+async function createSuiteCase(req, res) {
+  if (!requireCompany(req, res)) return;
+  try {
+    const instruction = req.body?.instruction || "";
+    const result = await apiSuiteService.createCase({
+      suiteId: req.params.suiteId,
+      instruction,
+      companyId: req.user.companyId,
+      anthropicClient: instruction.trim()
+        ? await getUserAnthropicClient(req.user._id)
+        : null,
+    });
+    res.status(201).json({ case: result.case });
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("createSuiteCase error:", err);
+    res.status(status).json({ message: err.message || "Internal error" });
+  }
+}
+
+async function deleteSuiteCase(req, res) {
+  if (!requireCompany(req, res)) return;
+  try {
+    await apiSuiteService.deleteCase({
+      suiteId: req.params.suiteId,
+      caseId: req.params.caseId,
+      companyId: req.user.companyId,
+    });
+    res.json({ success: true });
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("deleteSuiteCase error:", err);
+    res.status(status).json({ message: err.message || "Internal error" });
+  }
+}
+
 async function deleteSuite(req, res) {
   if (!requireCompany(req, res)) return;
   const ApiSuite = require("../model/ApiSuiteModel");
@@ -890,6 +927,8 @@ module.exports = {
   listSuites,
   runSuite,
   refineSuiteCase,
+  createSuiteCase,
+  deleteSuiteCase,
   deleteSuite,
   getDocVariables,
   setDocVariables,

@@ -29,6 +29,8 @@ const {
   listSuites,
   runSuite,
   refineSuiteCase,
+  createSuiteCase,
+  deleteSuiteCase,
   deleteSuite,
   getDocVariables,
   setDocVariables,
@@ -77,6 +79,9 @@ router.post("/repos/:owner/:repo/sections/:section/suites", protect, generateSec
 router.get("/repos/:owner/:repo/suites", protect, listSuites);
 router.post("/suites/:suiteId/run", protect, runSuite);
 router.post("/suites/:suiteId/cases/:caseId/refine", protect, refineSuiteCase);
+// One test written by hand (blank, or from a sentence), and removing one.
+router.post("/suites/:suiteId/cases", protect, createSuiteCase);
+router.delete("/suites/:suiteId/cases/:caseId", protect, deleteSuiteCase);
 router.delete("/suites/:suiteId", protect, deleteSuite);
 
 // Per-endpoint variables (tokens / api keys / ids a single test needs). GET

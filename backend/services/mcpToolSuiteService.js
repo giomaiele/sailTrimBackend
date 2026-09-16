@@ -476,6 +476,122 @@ Rules:
 - "covers" must reflect the case AFTER the change, including what was already there.
 - Return only the JSON object.`;
 
+const CREATE_SYSTEM = `You write ONE test case for a single MCP tool, from a plain-language instruction.
+
+Return STRICT JSON only:
+{
+  "name": "short descriptive name",
+  "covers": "ONE plain sentence a non-technical QA lead can read, describing what this test verifies",
+  "category": "happy_path | missing_required | wrong_type | boundary | error_handling",
+  "args": {},
+  "assertions": ["plain-English checks on the response"],
+  "expectError": false
+}
+
+Rules:
+- Exactly one case, doing what the instruction asks — nothing more.
+- "args" must validate against the tool's inputSchema, unless the case deliberately tests invalid input.
+- Set "expectError": true when the tool SHOULD reject the input; the tool erroring is then the PASS.
+- 1 to 4 assertions, each decidable from THIS single response alone.
+- Return only the JSON object.`;
+
+/**
+ * Add ONE case to an existing suite: blank, or written from a sentence. The
+ * generators only ever produce a whole suite, so without this a user who wants
+ * one more check has to regenerate everything.
+ */
+async function createCase({
+  suiteId,
+  companyId,
+  instruction = "",
+  anthropicClient = null,
+}) {
+  const suite = await McpToolSuite.findOne({ _id: suiteId, companyId });
+  if (!suite) {
+    const err = new Error("Suite not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  const tool = await loadToolForCompany({
+    projectId: suite.projectId,
+    toolName: suite.toolName,
+    companyId,
+  });
+
+  let next = {
+    name: "New test",
+    covers: "",
+    category: "happy_path",
+    args: {},
+    assertions: [],
+    expectError: false,
+  };
+
+  if (instruction && instruction.trim()) {
+    const client = anthropicClient || getAnthropic();
+    const resp = await client.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 1500,
+      system: CREATE_SYSTEM,
+      messages: [
+        {
+          role: "user",
+          content: JSON.stringify(
+            {
+              tool: {
+                name: tool.name,
+                description: tool.description,
+                inputSchema: tool.inputSchema,
+                outputSchema: tool.outputSchema,
+              },
+              instruction: instruction.trim(),
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    });
+    const parsed = safeParseJson(extractText(resp));
+    if (!parsed) {
+      const err = new Error("Could not understand it. Try rewording it.");
+      err.statusCode = 502;
+      throw err;
+    }
+    next = {
+      name: parsed.name || next.name,
+      covers: parsed.covers || "",
+      category: parsed.category || "happy_path",
+      args: parsed.args && typeof parsed.args === "object" ? parsed.args : {},
+      assertions: Array.isArray(parsed.assertions) ? parsed.assertions : [],
+      expectError: parsed.expectError === true,
+    };
+  }
+
+  suite.cases.push(next);
+  await suite.save();
+  return { suite, case: suite.cases[suite.cases.length - 1] };
+}
+
+/** Delete ONE case, so a hand-written or badly refined test can be removed. */
+async function deleteCase({ suiteId, caseId, companyId }) {
+  const suite = await McpToolSuite.findOne({ _id: suiteId, companyId });
+  if (!suite) {
+    const err = new Error("Suite not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  const c = suite.cases.id(caseId);
+  if (!c) {
+    const err = new Error("Test case not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  c.deleteOne();
+  await suite.save();
+  return { suite };
+}
+
 /** Change what one case covers, from a plain instruction. */
 async function refineCase({
   suiteId,
@@ -569,14 +685,32 @@ async function refineCase({
 
 /** Every suite of a project, ordered so the tests page can group them stably. */
 async function listProjectSuites({ projectId, companyId }) {
-  return McpToolSuite.find({ projectId, companyId })
+  const suites = await McpToolSuite.find({ projectId, companyId })
     .sort({ group: 1, toolName: 1, kind: 1 })
     .lean();
+
+  // Same reason as the API side: to write a check on a field you have to know
+  // the field exists, so ship each tool's schemas with its tests.
+  const tools = await McpTool.find({
+    projectId,
+    companyId,
+    name: { $in: [...new Set(suites.map((s) => s.toolName))] },
+  })
+    .select("name inputSchema outputSchema")
+    .lean();
+  const byName = new Map(tools.map((t) => [t.name, t]));
+  return suites.map((s) => ({
+    ...s,
+    inputSchema: byName.get(s.toolName)?.inputSchema || null,
+    outputSchema: byName.get(s.toolName)?.outputSchema || null,
+  }));
 }
 
 module.exports = {
   groupForTool,
   generateSuite,
+  createCase,
+  deleteCase,
   generateProjectSuites,
   runSuite,
   refineCase,

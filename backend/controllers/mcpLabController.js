@@ -1074,6 +1074,42 @@ async function runToolSuite(req, res) {
   }
 }
 
+async function createToolSuiteCase(req, res) {
+  if (!requireCompany(req, res)) return;
+  try {
+    const instruction = req.body?.instruction || "";
+    const result = await mcpToolSuites.createCase({
+      suiteId: req.params.suiteId,
+      instruction,
+      companyId: req.user.companyId,
+      anthropicClient: instruction.trim()
+        ? await getUserAnthropicClient(req.user._id)
+        : null,
+    });
+    res.status(201).json({ case: result.case });
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("createToolSuiteCase error:", err);
+    res.status(status).json({ message: err.message || "Internal error" });
+  }
+}
+
+async function deleteToolSuiteCase(req, res) {
+  if (!requireCompany(req, res)) return;
+  try {
+    await mcpToolSuites.deleteCase({
+      suiteId: req.params.suiteId,
+      caseId: req.params.caseId,
+      companyId: req.user.companyId,
+    });
+    res.json({ success: true });
+  } catch (err) {
+    const status = err.statusCode || 500;
+    console.error("deleteToolSuiteCase error:", err);
+    res.status(status).json({ message: err.message || "Internal error" });
+  }
+}
+
 async function refineToolSuiteCase(req, res) {
   if (!requireCompany(req, res)) return;
   try {
@@ -1129,6 +1165,8 @@ module.exports = {
   listToolSuites,
   runToolSuite,
   refineToolSuiteCase,
+  createToolSuiteCase,
+  deleteToolSuiteCase,
   deleteToolSuite,
   connectServer,
   getTools,
