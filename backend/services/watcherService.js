@@ -109,6 +109,9 @@ async function diffAndFlagEditedEndpoints({
   beforeContracts,
   prNumber = null,
   editedAt = new Date(),
+  // false = only compute. The watcher decides afterwards whether the contract
+  // result is trusted (see step 3c) and stamps the final list itself.
+  write = true,
 }) {
   const after = await Doc.find(scope)
     .select("method path requestBody queryParams responses")
@@ -128,7 +131,7 @@ async function diffAndFlagEditedEndpoints({
     });
   }
 
-  if (edited.length) {
+  if (write && edited.length) {
     await Doc.updateMany(
       { _id: { $in: edited.map((e) => e.docId) } },
       { $set: { lastEditedAt: editedAt, lastEditedPr: prNumber } }
@@ -238,22 +241,28 @@ async function runPendingRun(runId) {
 
     // 3b) Edited: same endpoint, different contract.
     const editedAt = trigger.mergedAt ? new Date(trigger.mergedAt) : new Date();
-    const edited = await diffAndFlagEditedEndpoints({
+    // Computed, not stamped yet: the docs are rewritten by the model on every
+    // merge, so a contract can "change" only because the doc was worded
+    // differently (a 401 noted this time and not last time). Step 3c decides.
+    const contractEdited = await diffAndFlagEditedEndpoints({
       scope,
       beforeContracts,
       prNumber: trigger.prNumber || null,
       editedAt,
+      write: false,
     });
+    let edited = contractEdited;
 
     const anthropicClient = watcher.userId
       ? await getUserAnthropicClient(watcher.userId).catch(() => null)
       : null;
 
-    // 3c) Touched by the diff. A contract only moves for some changes — a new
-    // response field, a validation rule or a logic fix leaves it identical.
-    // Read what the PR actually changed and label every existing endpoint it
-    // touched. Added ON TOP of 3b: a contract change stays labeled even if the
-    // diff analysis misses it or fails.
+    // 3c) Touched by the diff. The PR diff is the only thing that knows what
+    // the code actually changed, so when it was read in full it DECIDES: only
+    // endpoints it touched are labeled, and the contract comparison can't add
+    // doc-wording noise on top. The contract result is the fallback when the
+    // diff couldn't be read (no PR, API failure, or a diff too big to send
+    // whole) — then nothing real is lost to a partial read.
     if (trigger.kind === "merge" && trigger.prNumber) {
       try {
         const files = await prDiff.fetchPRFiles({
@@ -264,12 +273,20 @@ async function runPendingRun(runId) {
         });
         const freshKeys = new Set(fresh.map(endpointKey));
         const items = after.map(endpointKey).filter((k) => !freshKeys.has(k));
-        const { touched } = await prDiff.findTouched({
+        const { touched, analyzed, truncated } = await prDiff.findTouched({
           files,
           items,
           kind: "api",
           anthropicClient,
         });
+        if (analyzed && !truncated) {
+          // Keep the contract detail for endpoints the diff also named — it's
+          // the precise "added param x" line — and drop the rest.
+          const touchedKeys = new Set(touched.map((t) => t.key));
+          edited = contractEdited.filter((e) =>
+            touchedKeys.has(`${String(e.method).toUpperCase()} ${e.path}`)
+          );
+        }
 
         const byKey = new Map(
           edited.map((e) => [`${String(e.method).toUpperCase()} ${e.path}`, e])
@@ -293,16 +310,18 @@ async function runPendingRun(runId) {
           edited.push(entry);
           byKey.set(t.key, entry);
         }
-        if (edited.length) {
-          await Doc.updateMany(
-            { _id: { $in: edited.map((e) => e.docId) } },
-            { $set: { lastEditedAt: editedAt, lastEditedPr: trigger.prNumber } }
-          );
-        }
       } catch (err) {
         // Diff analysis is best-effort — the contract result above still stands.
         console.error("[watcher] PR diff analysis failed:", err.message);
       }
+    }
+    // Stamp whatever survived. Covers the fallback paths too (manual run, diff
+    // unreadable), which never reached the update inside the block above.
+    if (edited.length) {
+      await Doc.updateMany(
+        { _id: { $in: edited.map((e) => e.docId) } },
+        { $set: { lastEditedAt: editedAt, lastEditedPr: trigger.prNumber || null } }
+      );
     }
 
     // 4) Generate QA for the new endpoints only. One at a time, and a failure

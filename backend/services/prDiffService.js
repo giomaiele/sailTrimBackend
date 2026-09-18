@@ -1,5 +1,5 @@
 const Anthropic = require("@anthropic-ai/sdk");
-const { getOctokit, getPRFiles } = require("./githubService");
+const { getOctokit } = require("./githubService");
 
 // Which existing endpoints or tools did a merged PR actually TOUCH?
 //
@@ -10,13 +10,26 @@ const { getOctokit, getPRFiles } = require("./githubService");
 // model to map it onto the endpoints/tools that exist. Language-agnostic — no
 // per-framework parsing.
 //
-// This ADDS to the contract comparison, it doesn't replace it: callers keep the
-// contract result as a floor, so a param change is labeled even if the model
-// misses it.
+// API: when the diff is read in full it decides which endpoints are labeled —
+// the docs are rewritten by a model on every merge, so contract differences
+// alone include wording noise. The contract comparison is the fallback when the
+// diff can't be read (or is truncated). MCP: the live server's schemas are real,
+// so there the diff adds to the schema comparison instead.
 
 const MODEL = process.env.CLAUDE_QA_MODEL || "claude-opus-4-7";
-const MAX_DIFF_CHARS = 60000;
-const MAX_PATCH_CHARS = 12000;
+// A big PR (a release merging develop into main) is read in several batches
+// instead of being cut at one size — a cut hides changes. Batches are whole
+// files, never a file split in two.
+const MAX_BATCH_CHARS = 50000;
+// One file's patch larger than a batch is cut; the read is then marked
+// truncated so callers fall back instead of trusting it.
+const MAX_PATCH_CHARS = 45000;
+// Cost ceiling: past this many batches the rest isn't read (and the read is
+// marked truncated).
+const MAX_BATCHES = 8;
+// Source files GitHub gives no patch for (too large to diff) hide a change we
+// can't see. Lockfiles and assets without a patch don't matter.
+const SOURCE_EXT = /\.(m?[jt]sx?|cjs|py|go|rb|java|kt|php|cs|rs|scala|swift|ex|exs)$/i;
 
 let _anthropic = null;
 function getAnthropic() {
@@ -41,34 +54,72 @@ function safeParseJson(txt) {
   }
 }
 
+// Every file of the PR. The endpoint returns 100 per page (3000 max), and the
+// shared helper only read the first page — a release PR lost everything after
+// file 100 without anyone noticing.
 async function fetchPRFiles({ installationId, owner, repo, prNumber }) {
   if (!installationId || !prNumber) return [];
   const octokit = await getOctokit(installationId);
-  return getPRFiles(octokit, owner, repo, prNumber);
+  const files = [];
+  for (let page = 1; page <= 30; page++) {
+    const { data } = await octokit.request(
+      "GET /repos/{owner}/{repo}/pulls/{pull_number}/files",
+      { owner, repo, pull_number: prNumber, per_page: 100, page }
+    );
+    files.push(...data);
+    if (data.length < 100) break;
+  }
+  return files;
 }
 
-// Files with a textual patch, capped so one huge generated file can't crowd out
-// the change that matters. Files GitHub gives no patch for (binaries, very large
-// diffs) are named but not included.
-function buildDiffText(files) {
-  let out = "";
-  for (const f of files || []) {
+// Split the PR into prompt-sized batches of whole files. Files in the same
+// directory are kept next to each other, so a helper and the route that uses it
+// usually land in the same batch — a change spread over two batches is the one
+// thing a batch-by-batch read can miss.
+//
+// Returns { batches: string[], truncated }. `truncated` is true when anything
+// wasn't read: a patch cut to size, a source file GitHub gave no diff for, or
+// batches past the cost ceiling.
+function buildDiffBatches(files) {
+  const sorted = [...(files || [])].sort((a, b) =>
+    String(a.filename).localeCompare(String(b.filename))
+  );
+  const batches = [];
+  let current = "";
+  let truncated = false;
+
+  for (const f of sorted) {
     const header = `### ${f.filename} (${f.status})\n`;
+    let chunk;
     if (!f.patch) {
-      out += `${header}(no textual diff)\n\n`;
-      continue;
+      if (SOURCE_EXT.test(f.filename || "") && f.status !== "removed") truncated = true;
+      chunk = `${header}(no textual diff)\n\n`;
+    } else {
+      let patch = f.patch;
+      if (patch.length > MAX_PATCH_CHARS) {
+        patch = `${patch.slice(0, MAX_PATCH_CHARS)}\n… [patch truncated]`;
+        truncated = true;
+      }
+      chunk = `${header}\`\`\`diff\n${patch}\n\`\`\`\n\n`;
     }
-    const patch =
-      f.patch.length > MAX_PATCH_CHARS
-        ? `${f.patch.slice(0, MAX_PATCH_CHARS)}\n… [patch truncated]`
-        : f.patch;
-    out += `${header}\`\`\`diff\n${patch}\n\`\`\`\n\n`;
-    if (out.length > MAX_DIFF_CHARS) {
-      out = `${out.slice(0, MAX_DIFF_CHARS)}\n… [diff truncated]`;
-      break;
+    if (current && current.length + chunk.length > MAX_BATCH_CHARS) {
+      batches.push(current);
+      current = "";
     }
+    current += chunk;
   }
-  return out;
+  if (current) batches.push(current);
+
+  if (batches.length > MAX_BATCHES) {
+    truncated = true;
+    batches.length = MAX_BATCHES;
+  }
+  return { batches, truncated };
+}
+
+// The whole diff as one string — kept for callers that want a single text.
+function buildDiffText(files) {
+  return buildDiffBatches(files).batches.join("");
 }
 
 const API_SYSTEM = `You receive the diff of a merged pull request and the list of HTTP endpoints that exist in the repository after the merge.
@@ -105,55 +156,97 @@ Rules:
 /**
  * @param kind  "api" (items are "METHOD /path") or "mcp" (items are tool names)
  * @returns {{ touched: {key, summary, changesInterface?}[], addedTools: string[],
- *             removedTools: string[], analyzed: boolean }}
+ *             removedTools: string[], analyzed: boolean, truncated: boolean }}
+ *          Big diffs are read in batches (one model call each) and merged.
  *          `analyzed` is false when there was nothing to analyze or the call
  *          failed — callers treat that as "unknown", never as "nothing changed".
  */
 async function findTouched({ files, items, kind, anthropicClient = null }) {
-  const empty = { touched: [], addedTools: [], removedTools: [], analyzed: false };
-  const diff = buildDiffText(files);
-  if (!diff.trim() || !(items || []).length) return empty;
+  const empty = {
+    touched: [],
+    addedTools: [],
+    removedTools: [],
+    analyzed: false,
+    truncated: false,
+  };
+  if (!(items || []).length) return empty;
+  const { batches, truncated } = buildDiffBatches(files);
+  if (!batches.length) return empty;
 
   const client = anthropicClient || getAnthropic();
-  const resp = await client.messages.create({
-    model: MODEL,
-    max_tokens: 2000,
-    system: kind === "mcp" ? MCP_SYSTEM : API_SYSTEM,
-    messages: [
-      {
-        role: "user",
-        content:
-          `${kind === "mcp" ? "TOOLS" : "ENDPOINTS"}:\n${items.join("\n")}\n\n` +
-          `PULL REQUEST DIFF:\n${diff}`,
-      },
-    ],
-  });
-  const text = (resp?.content || [])
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("");
-  const parsed = safeParseJson(text);
-  if (!parsed) return empty;
-
-  // Never trust a key the model made up — only what we actually listed.
   const allowed = new Set(items);
-  const touched = (Array.isArray(parsed.touched) ? parsed.touched : [])
-    .filter((t) => t && allowed.has(t.key))
-    .map((t) => ({
-      key: t.key,
-      summary: String(t.summary || "").trim(),
-      changesInterface: t.changesInterface === true,
-    }));
-  const addedTools = (Array.isArray(parsed.addedTools) ? parsed.addedTools : [])
-    .map((n) => String(n || "").trim())
-    .filter((n) => n && !allowed.has(n));
-  // A deleted tool can only be one that existed before, so it must be a listed
-  // key — same rule as `touched`.
-  const removedTools = (Array.isArray(parsed.removedTools) ? parsed.removedTools : [])
-    .map((n) => String(n || "").trim())
-    .filter((n) => n && allowed.has(n));
+  const touchedByKey = new Map();
+  const added = new Set();
+  const removed = new Set();
 
-  return { touched, addedTools, removedTools, analyzed: true };
+  for (let i = 0; i < batches.length; i++) {
+    const part =
+      batches.length > 1
+        ? `\n\n(This is part ${i + 1} of ${batches.length} of the diff. Judge only what this part shows.)`
+        : "";
+    const resp = await client.messages.create({
+      model: MODEL,
+      max_tokens: 2000,
+      system: kind === "mcp" ? MCP_SYSTEM : API_SYSTEM,
+      messages: [
+        {
+          role: "user",
+          content:
+            `${kind === "mcp" ? "TOOLS" : "ENDPOINTS"}:\n${items.join("\n")}\n\n` +
+            `PULL REQUEST DIFF:${part}\n${batches[i]}`,
+        },
+      ],
+    });
+    const text = (resp?.content || [])
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("");
+    const parsed = safeParseJson(text);
+    // One unreadable batch makes the whole read incomplete — report it as not
+    // analyzed so callers fall back, rather than trusting a partial answer.
+    if (!parsed) return { ...empty, truncated };
+
+    // Never trust a key the model made up — only what we actually listed.
+    for (const t of Array.isArray(parsed.touched) ? parsed.touched : []) {
+      if (!t || !allowed.has(t.key)) continue;
+      const summary = String(t.summary || "").trim();
+      const prev = touchedByKey.get(t.key);
+      if (prev) {
+        if (summary && !prev.summary.includes(summary)) {
+          prev.summary = prev.summary ? `${prev.summary} ${summary}` : summary;
+        }
+        prev.changesInterface = prev.changesInterface || t.changesInterface === true;
+      } else {
+        touchedByKey.set(t.key, {
+          key: t.key,
+          summary,
+          changesInterface: t.changesInterface === true,
+        });
+      }
+    }
+    for (const n of Array.isArray(parsed.addedTools) ? parsed.addedTools : []) {
+      const name = String(n || "").trim();
+      if (name && !allowed.has(name)) added.add(name);
+    }
+    // A deleted tool can only be one that existed before, so it must be a
+    // listed key — same rule as `touched`.
+    for (const n of Array.isArray(parsed.removedTools) ? parsed.removedTools : []) {
+      const name = String(n || "").trim();
+      if (name && allowed.has(name)) removed.add(name);
+    }
+  }
+
+  // Moved in one batch, deleted in another (a tool renamed across files): the
+  // deletion wins only if no batch also defines it.
+  for (const name of removed) if (added.has(name)) removed.delete(name);
+
+  return {
+    touched: [...touchedByKey.values()].filter((t) => !removed.has(t.key)),
+    addedTools: [...added],
+    removedTools: [...removed],
+    analyzed: true,
+    truncated,
+  };
 }
 
-module.exports = { fetchPRFiles, buildDiffText, findTouched };
+module.exports = { fetchPRFiles, buildDiffBatches, buildDiffText, findTouched };

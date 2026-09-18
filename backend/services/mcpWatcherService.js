@@ -260,7 +260,10 @@ async function runPendingRun(runId) {
         diffTouched = res.touched;
         diffAdded = res.addedTools;
         diffRemoved = res.removedTools || [];
-        diffAnalyzed = res.analyzed;
+        // A diff cut to fit the prompt can hide a tool the PR adds; trusting it
+        // would leave that tool unflagged. Treat a truncated read as unknown so
+        // the run falls back to "anything the server didn't have before".
+        diffAnalyzed = res.analyzed && !res.truncated;
       } catch (err) {
         console.error("[mcp-watcher] PR diff analysis failed:", err.message);
       }

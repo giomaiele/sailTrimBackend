@@ -590,7 +590,7 @@ async function runBackfill(jobId) {
               source: "backfill",
               sourceSha: file.sha,
             });
-            if (existing > 0) {
+            if (existing > 0 && !job.force) {
               return {
                 saved: existing,
                 usage: { inputTokens: 0, outputTokens: 0 },
@@ -730,18 +730,23 @@ async function startBackfill(req, res) {
   // force=true wipes existing backfill docs for this repo so the SHA cache
   // (line ~250 below) doesn't short-circuit Claude and we get a clean
   // regeneration with the latest prompt / schema context.
-  if (force) {
-    const wiped = await Doc.deleteMany({ owner, repo, source: "backfill" });
-    console.log(
-      `[startBackfill] force=true — wiped ${wiped.deletedCount} existing backfill docs`
-    );
-  }
+  // DISABLED: deleting the docs orphaned everything hanging off them — saved
+  // tests, per-endpoint variables, NEW/Edited labels — because those point at
+  // the doc's _id. A forced run now skips the SHA cache instead (job.force) and
+  // the save upserts each endpoint in place.
+  // if (force) {
+  //   const wiped = await Doc.deleteMany({ owner, repo, source: "backfill" });
+  //   console.log(
+  //     `[startBackfill] force=true — wiped ${wiped.deletedCount} existing backfill docs`
+  //   );
+  // }
 
   const job = await BackfillJob.create({
     installationId: Number(installationId),
     owner,
     repo,
     userId: installation.userId,
+    force: force === true,
   });
   console.log("[startBackfill] job created:", job._id.toString());
 

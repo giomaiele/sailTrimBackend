@@ -14,6 +14,10 @@ const backfillJobSchema = new mongoose.Schema({
   filesProcessed: { type: Number, default: 0 },
   filesSkipped: { type: Number, default: 0 },
   filesCached: { type: Number, default: 0 },
+  // Re-document every file, even ones unchanged since the last run (skips the
+  // SHA cache). Docs are updated in place, so tests and variables keep pointing
+  // at the same endpoints.
+  force: { type: Boolean, default: false },
   // Files where Claude call or the Mongo save threw (e.g. a truncated
   // response) — distinct from "Claude looked at this file and correctly
   // found zero endpoints". Surfaced so a partial failure is visible from
