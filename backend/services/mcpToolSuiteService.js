@@ -5,6 +5,8 @@ const McpToolSuite = require("../model/McpToolSuiteModel.js");
 const mcpProjects = require("./mcpProjectService.js");
 const mcpLab = require("./mcpLabService.js");
 const Anthropic = require("@anthropic-ai/sdk");
+const aiUsage = require("./aiUsageService.js");
+const { modelFor } = require("./modelRouter.js");
 
 // Saved smoke / regression suites for MCP tools — the counterpart of
 // apiSuiteService on the API side, and deliberately the same shape so both
@@ -23,7 +25,9 @@ function getAnthropic() {
   if (!_anthropic) {
     _anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || "missing" });
   }
-  return _anthropic;
+  // Metered: every call through the platform key is priced and recorded, so
+  // no service can spend Olivia's money invisibly (see aiUsageService).
+  return aiUsage.meter(_anthropic, { payer: "platform", action: "mcp_suites", surface: "mcp" });
 }
 
 function safeParseJson(txt) {
@@ -151,9 +155,9 @@ async function generateSuite({
   const tool = await loadToolForCompany({ projectId, toolName, companyId });
   const doc = await McpDoc.findOne({ projectId, toolName, companyId });
 
-  const client = anthropicClient || getAnthropic();
+  const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "mcp_suites", surface: "mcp" });
   const resp = await client.messages.create({
-    model: CLAUDE_MODEL,
+    model: modelFor("suites"),
     max_tokens: 3000,
     system: kind === "smoke" ? SMOKE_SYSTEM : REGRESSION_SYSTEM,
     messages: [
@@ -300,7 +304,7 @@ function truncate(value, max = 4000) {
 async function judgeAssertions({ tool, args, result, assertions, client }) {
   if (!assertions.length) return [];
   const resp = await client.messages.create({
-    model: CLAUDE_MODEL,
+    model: modelFor("judge"),
     max_tokens: 1500,
     system: JUDGE_SYSTEM,
     messages: [
@@ -354,7 +358,7 @@ async function runSuite({ suiteId, companyId, anthropicClient = null }) {
     projectId: suite.projectId,
     companyId,
   });
-  const client = anthropicClient || getAnthropic();
+  const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "mcp_suites", surface: "mcp" });
 
   const results = [];
   for (const c of suite.cases) {
@@ -528,9 +532,9 @@ async function createCase({
   };
 
   if (instruction && instruction.trim()) {
-    const client = anthropicClient || getAnthropic();
+    const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "mcp_suites", surface: "mcp" });
     const resp = await client.messages.create({
-      model: CLAUDE_MODEL,
+      model: modelFor("suites"),
       max_tokens: 1500,
       system: CREATE_SYSTEM,
       messages: [
@@ -623,9 +627,9 @@ async function refineCase({
     companyId,
   });
 
-  const client = anthropicClient || getAnthropic();
+  const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "mcp_suites", surface: "mcp" });
   const resp = await client.messages.create({
-    model: CLAUDE_MODEL,
+    model: modelFor("suites"),
     max_tokens: 2000,
     system: REFINE_SYSTEM,
     messages: [
@@ -699,11 +703,29 @@ async function listProjectSuites({ projectId, companyId }) {
     .select("name inputSchema outputSchema")
     .lean();
   const byName = new Map(tools.map((t) => [t.name, t]));
-  return suites.map((s) => ({
-    ...s,
-    inputSchema: byName.get(s.toolName)?.inputSchema || null,
-    outputSchema: byName.get(s.toolName)?.outputSchema || null,
-  }));
+
+  // Most tools declare no outputSchema (a plain dict returned as text), so the
+  // schema alone left the panel empty. The doc keeps a real response from a
+  // verified call — show that first, it has the actual field names and values.
+  const docs = await McpDoc.find({
+    projectId,
+    companyId,
+    toolName: { $in: [...byName.keys()] },
+  })
+    .select("toolName responseExample sampleResponse inferredOutputSchema")
+    .lean();
+  const docByName = new Map(docs.map((d) => [d.toolName, d]));
+
+  return suites.map((s) => {
+    const doc = docByName.get(s.toolName);
+    return {
+      ...s,
+      inputSchema: byName.get(s.toolName)?.inputSchema || null,
+      outputSchema:
+        byName.get(s.toolName)?.outputSchema || doc?.inferredOutputSchema || null,
+      responseExample: doc?.responseExample ?? doc?.sampleResponse ?? null,
+    };
+  });
 }
 
 module.exports = {

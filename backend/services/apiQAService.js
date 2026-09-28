@@ -1,4 +1,5 @@
 const Anthropic = require("@anthropic-ai/sdk");
+const aiUsage = require("./aiUsageService.js");
 const axios = require("axios");
 const crypto = require("crypto");
 const Doc = require("../model/DocModel");
@@ -16,7 +17,9 @@ function getAnthropic() {
       apiKey: process.env.ANTHROPIC_API_KEY || "missing",
     });
   }
-  return _anthropic;
+  // Metered: every call through the platform key is priced and recorded, so
+  // no service can spend Olivia's money invisibly (see aiUsageService).
+  return aiUsage.meter(_anthropic, { payer: "platform", action: "api_bug_hunter", surface: "api" });
 }
 
 const CLAUDE_MODEL = process.env.CLAUDE_QA_MODEL || "claude-opus-4-7";
@@ -454,7 +457,7 @@ Use a "{{key}}" placeholder wherever a path param or field matches one of these 
   // Previously-tried cases (from earlier runs) so a re-run explores new ground.
   const priorNote = buildPriorCasesNote(priorCases);
 
-  const client = anthropicClient || getAnthropic();
+  const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "api_bug_hunter", surface: "api" });
   const response = await client.messages.create({
     model: CLAUDE_MODEL,
     // 16k so 15 detailed cases never get truncated mid-JSON (the old 6k cap
@@ -717,7 +720,7 @@ ${JSON.stringify(
 EXECUTED CASES:
 ${JSON.stringify(slim, null, 2)}`;
 
-  const client = anthropicClient || getAnthropic();
+  const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "api_bug_hunter", surface: "api" });
   const response = await client.messages.create({
     model: CLAUDE_MODEL,
     max_tokens: 12000,
@@ -1300,7 +1303,7 @@ async function generateSuiteTestCases(
 
   const contextNote = buildContextNote(context);
 
-  const client = anthropicClient || getAnthropic();
+  const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "api_bug_hunter", surface: "api" });
   const response = await client.messages.create({
     model: CLAUDE_MODEL,
     max_tokens: 20000,

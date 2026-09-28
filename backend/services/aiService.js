@@ -1,5 +1,6 @@
 const OpenAI = require("openai");
 const Anthropic = require("@anthropic-ai/sdk");
+const aiUsage = require("./aiUsageService.js");
 
 let _openai = null;
 function getOpenAI() {
@@ -14,7 +15,9 @@ function getAnthropic() {
   if (!_anthropic) {
     _anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || "missing" });
   }
-  return _anthropic;
+  // Metered: every call through the platform key is priced and recorded, so
+  // no service can spend Olivia's money invisibly (see aiUsageService).
+  return aiUsage.meter(_anthropic, { payer: "platform", action: "misc", surface: "other" });
 }
 
 async function generateTestCases(diff) {
@@ -58,7 +61,7 @@ async function summarizePR({ diff, title, author, prNumber, baseBranch, prUrl, a
 
   const userContent = `${header}\n\nDIFF:\n${diff || "(empty diff)"}`;
 
-  const client = anthropicClient || getAnthropic();
+  const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "misc", surface: "other" });
   const msg = await client.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 1024,

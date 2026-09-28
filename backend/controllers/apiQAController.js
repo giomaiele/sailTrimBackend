@@ -172,6 +172,78 @@ async function getBugs(req, res) {
   res.json(bugs);
 }
 
+// Every bug of a whole repo (or imported project), newest first — the bug
+// hunter writes them per endpoint, and until now they could only be read one
+// endpoint at a time, so a repo had nowhere to show "what's broken".
+async function listScopeBugs(req, res) {
+  if (!requireCompany(req, res)) return;
+  const { owner, repo, id } = req.params;
+  const filter = { companyId: req.user.companyId };
+  if (id) {
+    const docs = await Doc.find({ projectId: id, companyId: req.user.companyId })
+      .select("_id")
+      .lean();
+    filter.docId = { $in: docs.map((d) => d._id) };
+  } else {
+    filter.owner = owner;
+    filter.repo = repo;
+  }
+  if (req.query.status) filter.status = req.query.status;
+
+  const bugs = await Bug.find(filter)
+    .sort({ createdAt: -1 })
+    .limit(Math.min(Number(req.query.limit) || 200, 500))
+    .lean();
+
+  // The endpoint each bug belongs to, so the page can group without a lookup
+  // per bug.
+  const docs = await Doc.find({ _id: { $in: bugs.map((b) => b.docId) } })
+    .select("method path")
+    .lean();
+  const byId = new Map(docs.map((d) => [String(d._id), d]));
+  res.json(
+    bugs.map((b) => ({
+      ...b,
+      method: byId.get(String(b.docId))?.method || "",
+      path: byId.get(String(b.docId))?.path || "",
+    }))
+  );
+}
+
+// Same for the bug hunter's runs: one row per run, without the heavy
+// executions/collection payloads.
+async function listScopeRuns(req, res) {
+  if (!requireCompany(req, res)) return;
+  const { owner, repo, id } = req.params;
+  const filter = { companyId: req.user.companyId };
+  if (id) {
+    const docs = await Doc.find({ projectId: id, companyId: req.user.companyId })
+      .select("_id")
+      .lean();
+    filter.docId = { $in: docs.map((d) => d._id) };
+  } else {
+    filter.owner = owner;
+    filter.repo = repo;
+  }
+
+  const runs = await TestRun.find(filter, { executions: 0, postmanCollection: 0 })
+    .sort({ createdAt: -1 })
+    .limit(Math.min(Number(req.query.limit) || 100, 300))
+    .lean();
+
+  const docs = await Doc.find({ _id: { $in: runs.map((r) => r.docId) } })
+    .select("method path")
+    .lean();
+  const byId = new Map(docs.map((d) => [String(d._id), d]));
+  res.json(
+    runs.map((r) => ({
+      ...r,
+      method: byId.get(String(r.docId))?.method || "",
+      path: byId.get(String(r.docId))?.path || "",
+    }))
+  );
+}
+
 async function deleteBug(req, res) {
   if (!requireCompany(req, res)) return;
   await Bug.findOneAndDelete({
@@ -915,6 +987,8 @@ module.exports = {
   findBugs,
   findBugsForSection,
   getBugs,
+  listScopeBugs,
+  listScopeRuns,
   deleteBug,
   updateBugStatus,
   getCollection,

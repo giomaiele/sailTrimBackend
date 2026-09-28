@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken')
 const asyncHandler = require('express-async-handler')
 const User = require('../model/userModel')
+const aiUsage = require('../services/aiUsageService')
 
 const protect = asyncHandler(async (req, res, next) => {
     let token
@@ -22,6 +23,12 @@ const protect = asyncHandler(async (req, res, next) => {
                 res.status(401)
                 throw new Error("Not authorized")
             }
+
+            // Whose spend anything this request triggers belongs to.
+            aiUsage.setContext({
+                userId: req.user._id,
+                companyId: req.user.companyId || null,
+            })
 
             next()
 

@@ -1,4 +1,5 @@
 const Anthropic = require("@anthropic-ai/sdk");
+const aiUsage = require("./aiUsageService.js");
 const Doc = require("../model/DocModel");
 
 // Lazy init so a missing key doesn't crash module load.
@@ -9,7 +10,9 @@ function getAnthropic() {
       apiKey: process.env.ANTHROPIC_API_KEY || "missing",
     });
   }
-  return _anthropic;
+  // Metered: every call through the platform key is priced and recorded, so
+  // no service can spend Olivia's money invisibly (see aiUsageService).
+  return aiUsage.meter(_anthropic, { payer: "platform", action: "api_docs", surface: "api" });
 }
 
 // Claude Opus 4.7 — Anthropic's most capable model. Use claude-sonnet-4-6
@@ -175,7 +178,7 @@ const MAX_OUTPUT_TOKENS = 128_000;
 async function callClaudeForDocs({ filePath, content, mountContext, schemaContext, knownPrefix, diff, anthropicClient = null }) {
   const userMsg = buildUserMessage({ filePath, content, mountContext, schemaContext, knownPrefix, diff });
 
-  const client = anthropicClient || getAnthropic();
+  const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "api_docs", surface: "api" });
   const response = await callClaudeWithRetry(client, {
     model: CLAUDE_MODEL,
     max_tokens: MAX_OUTPUT_TOKENS,

@@ -246,6 +246,11 @@ app.use(cors());
 
 const endpointSecret = process.env.WEB_HOOK_STRIPE;
 
+// Every request runs inside an AI-usage context, so a Claude call made three
+// layers down still knows whose spend it is. Filled in by `protect` once the
+// user is known.
+app.use((req, res, next) => require("./services/aiUsageService").runWith({}, next));
+
 app.use("/api/user", require("./routes/userRoutes"));
 app.use("/api/company", require("./routes/companyRoutes"));
 app.use("/api/checkout", require("./routes/checkoutRoutes"));
@@ -255,6 +260,9 @@ app.use("/api/docs", require("./routes/docRoutes"));
 app.use("/api/github", require("./routes/githubRoutes"));
 app.use("/api/mcp-lab", require("./routes/mcpLabRoutes"));
 app.use("/api/qa", require("./routes/apiQARoutes"));
+app.use("/api/qa-report", require("./routes/qaReportRoutes"));
+app.use("/api/usage", require("./routes/usageRoutes"));
+app.use("/api/admin", require("./routes/adminRoutes"));
 app.use("/api/e2e", require("./routes/e2eQaRoutes"));
 app.use("/api/installations", require("./routes/installationsRoutes"));
 app.use("/api/example", require("./routes/exampleRoutes"));

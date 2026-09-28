@@ -1,5 +1,6 @@
 const OpenAI = require("openai");
 const Anthropic = require("@anthropic-ai/sdk");
+const aiUsage = require("./aiUsageService.js");
 
 const McpQaRun = require("../model/McpQaRunModel.js");
 const McpBug = require("../model/McpBugModel.js");
@@ -25,7 +26,9 @@ function getAnthropic() {
       apiKey: process.env.ANTHROPIC_API_KEY || "missing",
     });
   }
-  return _anthropic;
+  // Metered: every call through the platform key is priced and recorded, so
+  // no service can spend Olivia's money invisibly (see aiUsageService).
+  return aiUsage.meter(_anthropic, { payer: "platform", action: "mcp_bug_hunter", surface: "mcp" });
 }
 
 const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MCP_QA_MODEL || "gpt-4o";
@@ -229,7 +232,7 @@ async function callJsonLLM({ provider, model, system, user, maxTokens = 4096, an
   }
 
   if (chosenProvider === "anthropic") {
-    const client = anthropicClient || getAnthropic();
+    const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "mcp_bug_hunter", surface: "mcp" });
     const msg = await client.messages.create({
       model: chosenModel,
       max_tokens: maxTokens,

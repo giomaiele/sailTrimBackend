@@ -8,6 +8,8 @@ const {
   CLAUDE_MODEL,
 } = require("./apiQAService");
 const Anthropic = require("@anthropic-ai/sdk");
+const aiUsage = require("./aiUsageService.js");
+const { modelFor } = require("./modelRouter.js");
 
 // Persistent test suites per endpoint — the API-side counterpart of the MCP
 // smoke/regression suites.
@@ -22,7 +24,9 @@ function getAnthropic() {
   if (!_anthropic) {
     _anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || "missing" });
   }
-  return _anthropic;
+  // Metered: every call through the platform key is priced and recorded, so
+  // no service can spend Olivia's money invisibly (see aiUsageService).
+  return aiUsage.meter(_anthropic, { payer: "platform", action: "api_suites", surface: "api" });
 }
 
 function safeParseJson(txt) {
@@ -166,9 +170,9 @@ async function generateSuite({
     ? `\n\nAVAILABLE ENVIRONMENT VARIABLES: ${varKeys.join(", ")}`
     : "";
 
-  const client = anthropicClient || getAnthropic();
+  const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "api_suites", surface: "api" });
   const resp = await client.messages.create({
-    model: CLAUDE_MODEL,
+    model: modelFor("suites"),
     max_tokens: 4000,
     system: kind === "smoke" ? SMOKE_SYSTEM : REGRESSION_SYSTEM,
     messages: [
@@ -316,7 +320,7 @@ Rules:
 async function judgeAssertions({ doc, execution, assertions, client }) {
   if (!assertions.length) return [];
   const resp = await client.messages.create({
-    model: CLAUDE_MODEL,
+    model: modelFor("judge"),
     max_tokens: 1500,
     system: JUDGE_SYSTEM,
     messages: [
@@ -382,7 +386,7 @@ async function runSuite({
   const { config, variables } = await resolveDocRunConfig(doc, companyId, {
     authSchemeName,
   });
-  const client = anthropicClient || getAnthropic();
+  const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "api_suites", surface: "api" });
 
   const results = [];
   for (const c of suite.cases) {
@@ -556,9 +560,9 @@ async function createCase({
   };
 
   if (instruction && instruction.trim()) {
-    const client = anthropicClient || getAnthropic();
+    const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "api_suites", surface: "api" });
     const resp = await client.messages.create({
-      model: CLAUDE_MODEL,
+      model: modelFor("suites"),
       max_tokens: 1500,
       system: CREATE_SYSTEM,
       messages: [
@@ -651,9 +655,9 @@ async function refineCase({
   }
   const doc = await loadDocForCompany(suite.docId, companyId);
 
-  const client = anthropicClient || getAnthropic();
+  const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "api_suites", surface: "api" });
   const resp = await client.messages.create({
-    model: CLAUDE_MODEL,
+    model: modelFor("suites"),
     max_tokens: 2000,
     system: REFINE_SYSTEM,
     messages: [

@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { protect } = require("../middleware/authMiddleware");
+const { requireBudget } = require("../middleware/budgetMiddleware");
 const {
   getConfig,
   upsertConfig,
@@ -17,6 +18,8 @@ const {
   findBugs,
   findBugsForSection,
   getBugs,
+  listScopeBugs,
+  listScopeRuns,
   deleteBug,
   updateBugStatus,
   getCollection,
@@ -52,8 +55,13 @@ router.delete("/projects/:id", protect, deleteProject);
 router.put("/projects/:id/auth", protect, setProjectAuth);
 router.get("/projects/:id/section-collection", protect, getProjectSectionCollection);
 
-router.post("/find-bugs/:docId", protect, findBugs);
+router.post("/find-bugs/:docId", protect, requireBudget("api"), findBugs);
 router.get("/bugs/:docId", protect, getBugs);
+// Repo-wide / project-wide views: what the Bugs and QA Runs pages read.
+router.get("/repos/:owner/:repo/bugs", protect, listScopeBugs);
+router.get("/repos/:owner/:repo/runs", protect, listScopeRuns);
+router.get("/projects/:id/bugs", protect, listScopeBugs);
+router.get("/projects/:id/qa-runs", protect, listScopeRuns);
 router.patch("/bugs/:id", protect, updateBugStatus);
 router.delete("/bugs/:id", protect, deleteBug);
 
@@ -63,24 +71,24 @@ router.get("/runs/:docId", protect, listRuns);
 router.get("/run/:id", protect, getRun);
 
 // Suite QA — section-level multi-endpoint runs
-router.post("/projects/:id/suite/:section", protect, findBugsForSection);
+router.post("/projects/:id/suite/:section", protect, requireBudget("api"), findBugsForSection);
 router.get("/projects/:id/suite-runs", protect, listSuiteRuns);
 router.get("/suite-run/:id", protect, getSuiteRun);
 
 // Saved test suites (smoke / regression) — generated per endpoint, kept, re-run
 // later to catch behaviour that changed. Distinct from find-bugs above, which
 // generates throwaway cases for a single hunt.
-router.post("/docs/:docId/suites", protect, generateSuite);
-router.post("/projects/:id/sections/:section/suites", protect, generateSectionSuites);
+router.post("/docs/:docId/suites", protect, requireBudget("api"), generateSuite);
+router.post("/projects/:id/sections/:section/suites", protect, requireBudget("api"), generateSectionSuites);
 router.get("/projects/:id/suites", protect, listSuites);
 // Same two, for endpoints that came from a connected GitHub repo instead of a
 // pasted spec — those have owner/repo and no projectId.
-router.post("/repos/:owner/:repo/sections/:section/suites", protect, generateSectionSuites);
+router.post("/repos/:owner/:repo/sections/:section/suites", protect, requireBudget("api"), generateSectionSuites);
 router.get("/repos/:owner/:repo/suites", protect, listSuites);
-router.post("/suites/:suiteId/run", protect, runSuite);
-router.post("/suites/:suiteId/cases/:caseId/refine", protect, refineSuiteCase);
+router.post("/suites/:suiteId/run", protect, requireBudget("api"), runSuite);
+router.post("/suites/:suiteId/cases/:caseId/refine", protect, requireBudget("api"), refineSuiteCase);
 // One test written by hand (blank, or from a sentence), and removing one.
-router.post("/suites/:suiteId/cases", protect, createSuiteCase);
+router.post("/suites/:suiteId/cases", protect, requireBudget("api"), createSuiteCase);
 router.delete("/suites/:suiteId/cases/:caseId", protect, deleteSuiteCase);
 router.delete("/suites/:suiteId", protect, deleteSuite);
 

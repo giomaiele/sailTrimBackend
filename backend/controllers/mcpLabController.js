@@ -20,21 +20,14 @@ const McpUsageEvent = require("../model/McpUsageEventModel.js");
 const { getUserAnthropicClient } = require("../services/userKeyService.js");
 const mcpToolSuites = require("../services/mcpToolSuiteService.js");
 
-const FREE_LIMITS = {
-  projects: 2,
-  docs_generate: 3,
-  qa_run: 5,
-  smoke_generate: 3,
-  smoke_run: 5,
-  regression_generate: 3,
-  regression_run: 5,
-  profile_run: 3,
-  load_run: 3,
-  security_scan: 3,
-};
+// MOVED: these per-action caps used to live here and applied to EVERY plan —
+// a paying customer hit "Free trial limit reached (3/3)" on their fourth doc.
+// They're part of the plan now (usageLimitService.PLANS.free.mcpQuotas), so a
+// paid plan is limited by its budget and nothing else.
+//
+// const FREE_LIMITS = { projects: 2, docs_generate: 3, ... };
 
-const UPGRADE_MESSAGE =
-  "Free trial limit reached. If you need more QA runs, smoke tests, or MCP docs, please contact the provider to upgrade to the paid version.";
+const usageLimit = require("../services/usageLimitService.js");
 
 function ctx(req) {
   return {
@@ -56,17 +49,30 @@ function monthStart() {
   return new Date(now.getFullYear(), now.getMonth(), 1);
 }
 
+async function planOf(companyId) {
+  const Company = require("../model/companyModel");
+  const company = await Company.findById(companyId).select("plan").lean();
+  return company?.plan || "free";
+}
+
 async function requireMonthlyLimit(req, res, action) {
+  const plan = await planOf(req.user.companyId);
+  const limit = usageLimit.mcpQuotaFor(plan, action);
+  if (limit === null) return true; // paid: the dollar budget is the only cap
+
   const used = await McpUsageEvent.countDocuments({
     companyId: req.user.companyId,
     action,
     createdAt: { $gte: monthStart() },
   });
-  if (used >= FREE_LIMITS[action]) {
+  if (used >= limit) {
     res.status(403).json({
-      message: UPGRADE_MESSAGE,
+      code: "PLAN_QUOTA_REACHED",
+      message:
+        `The "${plan}" plan includes ${limit} of this per month (${used}/${limit} used). ` +
+        `It resets at the start of next month — upgrade the plan for more.`,
       action,
-      limit: FREE_LIMITS[action],
+      limit,
       used,
     });
     return false;
@@ -132,11 +138,16 @@ const saveProject = asyncHandler(async (req, res) => {
     const projectCount = await McpProject.countDocuments({
       companyId: req.user.companyId,
     });
-    if (projectCount >= FREE_LIMITS.projects) {
+    const plan = await planOf(req.user.companyId);
+    const maxProjects = usageLimit.mcpQuotaFor(plan, "projects");
+    if (maxProjects !== null && projectCount >= maxProjects) {
       return res.status(403).json({
-        message: UPGRADE_MESSAGE,
+        code: "PLAN_QUOTA_REACHED",
+        message:
+          `The "${plan}" plan includes ${maxProjects} MCP projects ` +
+          `(${projectCount}/${maxProjects} used). Upgrade the plan for more.`,
         action: "projects",
-        limit: FREE_LIMITS.projects,
+        limit: maxProjects,
         used: projectCount,
       });
     }

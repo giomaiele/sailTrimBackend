@@ -8,6 +8,8 @@ const mcpLab = require("./mcpLabService.js");
 const mcpQa = require("./mcpQaService.js");
 const mcpToolSuites = require("./mcpToolSuiteService.js");
 const prDiff = require("./prDiffService.js");
+const usageLimit = require("./usageLimitService.js");
+const aiUsage = require("./aiUsageService.js");
 const { getUserAnthropicClient } = require("./userKeyService.js");
 
 // The MCP watcher agent — the counterpart of watcherService for APIs.
@@ -198,6 +200,22 @@ async function runPendingRun(runId) {
   if (!run) return null;
 
   const watcher = await McpWatcher.findById(run.watcherId);
+
+  // Same as the API watcher: a merge-triggered run owns its usage context.
+  return aiUsage.runWith(
+    {
+      companyId: watcher?.companyId || null,
+      userId: watcher?.userId || null,
+      surface: "mcp",
+      projectId: watcher?.mcpProjectId || null,
+      owner: watcher?.owner || "",
+      repo: watcher?.repo || "",
+    },
+    () => runClaimed(run, watcher)
+  );
+}
+
+async function runClaimed(run, watcher) {
   const fail = async (message) => {
     run.status = "failed";
     run.error = message;
@@ -211,6 +229,14 @@ async function runPendingRun(runId) {
   };
 
   if (!watcher) return fail("The watcher was deleted before this run started.");
+
+  // Budget gate, before any model call — same reason as the API watcher.
+  if (!(await usageLimit.withinBudget(watcher.companyId, "mcp"))) {
+    return fail(
+      "Skipped: this workspace has no MCP budget left, or its plan doesn't " +
+        "include the MCP side."
+    );
+  }
 
   const project = await McpProject.findOne({
     _id: watcher.mcpProjectId,

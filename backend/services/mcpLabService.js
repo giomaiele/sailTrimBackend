@@ -23,6 +23,7 @@ const {
 
 const OpenAI = require("openai");
 const Anthropic = require("@anthropic-ai/sdk");
+const aiUsage = require("./aiUsageService.js");
 
 const { McpTrace } = require("../model/mcpTraceModel.js");
 
@@ -65,7 +66,9 @@ function getAnthropic() {
       apiKey: process.env.ANTHROPIC_API_KEY || "missing",
     });
   }
-  return _anthropic;
+  // Metered: every call through the platform key is priced and recorded, so
+  // no service can spend Olivia's money invisibly (see aiUsageService).
+  return aiUsage.meter(_anthropic, { payer: "platform", action: "mcp_lab", surface: "mcp" });
 }
 
 const DEFAULT_OPENAI_MODEL = "gpt-4o";
@@ -349,7 +352,7 @@ async function runPromptAgainstMcp({
       }
     } else if (provider === "anthropic") {
       const chosenModel = model || DEFAULT_CLAUDE_MODEL;
-      const client = anthropicClient || getAnthropic();
+      const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "mcp_lab", surface: "mcp" });
       const msg = await client.messages.create({
         model: chosenModel,
         max_tokens: 1024,
@@ -517,7 +520,7 @@ async function judgeTrace({
     rawText = completion.choices?.[0]?.message?.content;
     verdict = safeParseJson(rawText);
   } else if (provider === "anthropic") {
-    const client = anthropicClient || getAnthropic();
+    const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "mcp_lab", surface: "mcp" });
     const msg = await client.messages.create({
       model: chosenModel,
       max_tokens: 1024,
@@ -602,7 +605,7 @@ async function generateTestCases({
     );
   }
   if (provider === "anthropic") {
-    const client = anthropicClient || getAnthropic();
+    const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "mcp_lab", surface: "mcp" });
     const msg = await client.messages.create({
       model: chosenModel,
       max_tokens: 2048,
@@ -664,7 +667,7 @@ ${JSON.stringify(apiResponse, null, 2)}`;
     });
     parsed = safeParseJson(completion.choices?.[0]?.message?.content);
   } else if (provider === "anthropic") {
-    const client = anthropicClient || getAnthropic();
+    const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "mcp_lab", surface: "mcp" });
     const msg = await client.messages.create({
       model: chosenModel,
       max_tokens: 1024,

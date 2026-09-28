@@ -1,4 +1,5 @@
 const Anthropic = require("@anthropic-ai/sdk");
+const aiUsage = require("./aiUsageService.js");
 const { buildRepoContext } = require("./repoContextService");
 const { runSpec } = require("./e2ePlaywrightRunner");
 const { decrypt } = require("./secretCrypto");
@@ -10,7 +11,9 @@ function getAnthropic() {
       apiKey: process.env.ANTHROPIC_API_KEY || "missing",
     });
   }
-  return _anthropic;
+  // Metered: every call through the platform key is priced and recorded, so
+  // no service can spend Olivia's money invisibly (see aiUsageService).
+  return aiUsage.meter(_anthropic, { payer: "platform", action: "e2e_heal", surface: "e2e" });
 }
 
 // Opus 4.8 is the current, most capable model — best for the senior-level
@@ -86,7 +89,7 @@ async function improveAndHeal({ test, project, storagePath, env = null, anthropi
   // Run against the selected environment's URL when given, else the legacy
   // project baseUrl.
   const runBaseUrl = env?.baseUrl || project.baseUrl;
-  const client = anthropicClient || getAnthropic();
+  const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "e2e_heal", surface: "e2e" });
   const recorded = test.specCode || "";
   if (!recorded.trim()) {
     const err = new Error("This test has no recorded spec to improve yet.");

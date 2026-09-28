@@ -5,6 +5,8 @@ const BackfillJob = require("../model/BackfillJob");
 const apiSuiteService = require("./apiSuiteService");
 const apiQAService = require("./apiQAService");
 const prDiff = require("./prDiffService");
+const usageLimit = require("./usageLimitService");
+const aiUsage = require("./aiUsageService");
 const { getUserAnthropicClient } = require("./userKeyService");
 
 // The watcher agent.
@@ -185,6 +187,36 @@ async function runPendingRun(runId) {
     await run.save();
     return run;
   }
+
+  // No request behind a watcher, so it opens its own usage context — otherwise
+  // everything a merge triggers is recorded as belonging to nobody.
+  return aiUsage.runWith(
+    {
+      companyId: watcher.companyId,
+      userId: watcher.userId,
+      surface: "api",
+      owner: watcher.owner,
+      repo: watcher.repo,
+    },
+    () => runClaimed(run, watcher)
+  );
+}
+
+async function runClaimed(run, watcher) {
+  // Budget gate, before any model call. A watcher fires on its own, so this is
+  // where an over-budget workspace has to stop — nobody is watching a webhook.
+  if (!(await usageLimit.withinBudget(watcher.companyId, "api"))) {
+    run.status = "failed";
+    run.error =
+      "Skipped: this workspace has no API budget left, or its plan doesn't " +
+      "include the API side.";
+    run.finishedAt = new Date();
+    await run.save();
+    watcher.lastRun = { at: new Date(), status: "failed", newEndpoints: 0, testsCreated: 0 };
+    await watcher.save().catch(() => {});
+    return run;
+  }
+
   const trigger = run.trigger || { kind: "manual" };
 
   watcher.lastRun = {

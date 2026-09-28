@@ -1,6 +1,7 @@
 const OpenAI = require("openai");
 const { toFile } = require("openai");
 const Anthropic = require("@anthropic-ai/sdk");
+const aiUsage = require("./aiUsageService.js");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -29,7 +30,9 @@ function getAnthropic() {
       apiKey: process.env.ANTHROPIC_API_KEY || "missing",
     });
   }
-  return _anthropic;
+  // Metered: every call through the platform key is priced and recorded, so
+  // no service can spend Olivia's money invisibly (see aiUsageService).
+  return aiUsage.meter(_anthropic, { payer: "platform", action: "e2e", surface: "e2e" });
 }
 
 const CLAUDE_MODEL = process.env.E2E_QA_MODEL || "claude-opus-4-7";
@@ -154,7 +157,7 @@ Rules:
 - Keep every string short. Return ONLY the JSON, no prose.`;
 
 async function generateTestCases(transcript, { anthropicClient = null } = {}) {
-  const client = anthropicClient || getAnthropic();
+  const client = aiUsage.tag(anthropicClient || getAnthropic(), { action: "e2e", surface: "e2e" });
   const response = await client.messages.create({
     model: CLAUDE_MODEL,
     max_tokens: 8000,

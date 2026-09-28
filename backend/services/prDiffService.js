@@ -1,4 +1,6 @@
 const Anthropic = require("@anthropic-ai/sdk");
+const aiUsage = require("./aiUsageService.js");
+const { modelFor } = require("./modelRouter.js");
 const { getOctokit } = require("./githubService");
 
 // Which existing endpoints or tools did a merged PR actually TOUCH?
@@ -16,7 +18,8 @@ const { getOctokit } = require("./githubService");
 // diff can't be read (or is truncated). MCP: the live server's schemas are real,
 // so there the diff adds to the schema comparison instead.
 
-const MODEL = process.env.CLAUDE_QA_MODEL || "claude-opus-4-7";
+// Reading a diff and matching it to a list of names doesn't need the top
+// model — see modelRouter.
 // A big PR (a release merging develop into main) is read in several batches
 // instead of being cut at one size — a cut hides changes. Batches are whole
 // files, never a file split in two.
@@ -36,7 +39,9 @@ function getAnthropic() {
   if (!_anthropic) {
     _anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || "missing" });
   }
-  return _anthropic;
+  // Metered: every call through the platform key is priced and recorded, so
+  // no service can spend Olivia's money invisibly (see aiUsageService).
+  return aiUsage.meter(_anthropic, { payer: "platform" });
 }
 
 function safeParseJson(txt) {
@@ -185,7 +190,7 @@ async function findTouched({ files, items, kind, anthropicClient = null }) {
         ? `\n\n(This is part ${i + 1} of ${batches.length} of the diff. Judge only what this part shows.)`
         : "";
     const resp = await client.messages.create({
-      model: MODEL,
+      model: modelFor("diff"),
       max_tokens: 2000,
       system: kind === "mcp" ? MCP_SYSTEM : API_SYSTEM,
       messages: [

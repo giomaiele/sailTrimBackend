@@ -4,6 +4,7 @@ const Doc = require("../model/DocModel");
 const Installation = require("../model/Installation");
 const watcherService = require("../services/watcherService");
 const Company = require("../model/companyModel");
+const usageLimit = require("../services/usageLimitService");
 const { getOctokit, getDefaultBranch } = require("../services/githubService");
 
 function requireCompany(req, res) {
@@ -16,13 +17,18 @@ function requireCompany(req, res) {
 
 // Watchers are a paid capability. Checked on the company, not the user, so a
 // teammate can't create one the workspace isn't paying for.
+// Watchers are a plan FEATURE now (see usageLimitService.PLANS), not a
+// hard-coded "pro" — so adding a plan that includes them is a table edit, not a
+// hunt through controllers. Name kept: it's called from the MCP side too.
 async function requirePro(req, res) {
   const company = await Company.findById(req.user.companyId).select("plan").lean();
-  if (company?.plan !== "pro") {
+  const plan = company?.plan || "free";
+  if (!usageLimit.allowsFeature(plan, "watchers")) {
     res.status(402).json({
+      code: "PLAN_FEATURE_NOT_INCLUDED",
       message:
-        "Watchers are part of the Pro plan. Contact the provider to upgrade.",
-      plan: company?.plan || "free",
+        "Watchers aren't included in this plan. Contact the provider to upgrade.",
+      plan,
       required: "pro",
     });
     return false;

@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { protect } = require("../middleware/authMiddleware");
+const { requireBudget } = require("../middleware/budgetMiddleware");
 const c = require("../controllers/mcpLabController.js");
 
 // --- Connection / introspection ---
@@ -23,24 +24,24 @@ router.post("/judge/:traceId", protect, c.judge);
 router.post("/compare/:traceId", protect, c.compare);
 
 // --- Test case generator ---
-router.post("/generate-cases", protect, c.generateCases);
+router.post("/generate-cases", protect, requireBudget("mcp"), c.generateCases);
 
 // --- Generated MCP docs ---
-router.post("/docs/generate", protect, c.generateDocs);
-router.post("/projects/:id/tools/:toolName/docs", protect, c.generateDocsForTool);
+router.post("/docs/generate", protect, requireBudget("mcp"), c.generateDocs);
+router.post("/projects/:id/tools/:toolName/docs", protect, requireBudget("mcp"), c.generateDocsForTool);
 router.get("/docs", protect, c.listDocs);
 router.get("/docs/:id", protect, c.getDoc);
 router.delete("/docs/:id", protect, c.deleteDoc);
 
 // --- MCP QA agent ---
-router.post("/qa/run", protect, c.runQa);
+router.post("/qa/run", protect, requireBudget("mcp"), c.runQa);
 router.get("/qa/runs", protect, c.listQaRuns);
 router.get("/qa/runs/:id", protect, c.getQaRun);
 router.delete("/qa/runs/:id", protect, c.deleteQaRun);
 
 // --- Smoke suite (per project) ---
 router.get("/projects/:id/smoke", protect, c.getSmoke);
-router.post("/projects/:id/smoke/generate", protect, c.generateSmoke);
+router.post("/projects/:id/smoke/generate", protect, requireBudget("mcp"), c.generateSmoke);
 router.post("/projects/:id/smoke/run", protect, c.runSmoke);
 router.post(
   "/projects/:id/smoke/cases/:caseId/refine",
@@ -50,7 +51,7 @@ router.post(
 
 // --- Regression suite (per project) ---
 router.get("/projects/:id/regression", protect, c.getRegression);
-router.post("/projects/:id/regression/generate", protect, c.generateRegression);
+router.post("/projects/:id/regression/generate", protect, requireBudget("mcp"), c.generateRegression);
 router.post("/projects/:id/regression/run", protect, c.runRegression);
 router.post(
   "/projects/:id/regression/cases/:caseId/refine",
@@ -97,13 +98,13 @@ router.post("/suites/:id/run", protect, c.runSuite);
 // One model call per tool, so a server with hundreds of tools works. The
 // project-level smoke/regression routes above keep the old all-at-once
 // behaviour for projects small enough that it still fits.
-router.post("/projects/:projectId/tools/:toolName/suites", protect, c.generateToolSuite);
-router.post("/projects/:id/tool-suites", protect, c.generateProjectToolSuites);
+router.post("/projects/:projectId/tools/:toolName/suites", protect, requireBudget("mcp"), c.generateToolSuite);
+router.post("/projects/:id/tool-suites", protect, requireBudget("mcp"), c.generateProjectToolSuites);
 router.get("/projects/:id/tool-suites", protect, c.listToolSuites);
-router.post("/tool-suites/:suiteId/run", protect, c.runToolSuite);
-router.post("/tool-suites/:suiteId/cases/:caseId/refine", protect, c.refineToolSuiteCase);
+router.post("/tool-suites/:suiteId/run", protect, requireBudget("mcp"), c.runToolSuite);
+router.post("/tool-suites/:suiteId/cases/:caseId/refine", protect, requireBudget("mcp"), c.refineToolSuiteCase);
 // One test written by hand (blank, or from a sentence), and removing one.
-router.post("/tool-suites/:suiteId/cases", protect, c.createToolSuiteCase);
+router.post("/tool-suites/:suiteId/cases", protect, requireBudget("mcp"), c.createToolSuiteCase);
 router.delete("/tool-suites/:suiteId/cases/:caseId", protect, c.deleteToolSuiteCase);
 router.delete("/tool-suites/:suiteId", protect, c.deleteToolSuite);
 
