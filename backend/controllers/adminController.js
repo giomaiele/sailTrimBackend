@@ -13,7 +13,7 @@ const AiUsageModel = require("../model/AiUsageModel");
 /** Every workspace, with this month's spend against its budget. */
 async function listCompanies(req, res) {
   const companies = await Company.find({})
-    .select("name plan aiBudgetUsd planNote createdAt ownerUserId")
+    .select("name plan aiBudgetUsd planNote createdAt ownerUserId anthropicKeyMask")
     .sort({ createdAt: -1 })
     .lean();
 
@@ -62,10 +62,17 @@ async function listCompanies(req, res) {
           ? c.aiBudgetUsd
           : usageLimit.limitsFor(c.plan).monthlyAiUsd;
       const owner = ownerBy.get(String(c.ownerUserId));
+      // A workspace with its own key that is ALSO spending ours means something
+      // fell back — a revoked key, or a path that never got the company's. It
+      // reads as "$0 spent" on the plan while quietly costing us money, so it
+      // has to be called out rather than inferred from two columns.
+      const hasOwnKey = !!c.anthropicKeyMask;
       return {
         _id: c._id,
         name: c.name,
         plan: c.plan,
+        hasOwnKey,
+        spendingOursAnyway: hasOwnKey && spend.platformUsd > 0,
         // What this plan lets them use — api, mcp, automation, watchers.
         features: usageLimit.featuresOf(c.plan),
         aiBudgetUsd: c.aiBudgetUsd ?? null,

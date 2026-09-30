@@ -18,4 +18,9 @@ router.get("/slack", protect, c.getSlackConfig);
 router.put("/slack", protect, c.saveSlackConfig);
 router.delete("/slack", protect, c.deleteSlackConfig);
 
+// The workspace's own Anthropic key: its work bills that account, not Olivia's.
+router.get("/anthropic-key", protect, c.getCompanyAnthropicKey);
+router.put("/anthropic-key", protect, c.saveCompanyAnthropicKey);
+router.delete("/anthropic-key", protect, c.deleteCompanyAnthropicKey);
+
 module.exports = router;

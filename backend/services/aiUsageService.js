@@ -97,6 +97,43 @@ async function record(callCtx, usage, model) {
   }
 }
 
+// A customer running on their OWN Anthropic key sees Anthropic's errors, and
+// "401 authentication_error" reads as "Olivia is broken". Say which account has
+// the problem and what to do, once, here — every service that calls Claude gets
+// it without knowing anything about keys.
+function explain(err, ctx) {
+  if (ctx.payer !== "customer") return err;
+
+  const status = err?.status || err?.statusCode;
+  const type = err?.error?.error?.type || err?.error?.type || "";
+  let message = null;
+
+  if (status === 401 || type === "authentication_error") {
+    message =
+      "Your workspace's Anthropic key was rejected. Check it in Workspace — " +
+      "it may have been revoked or mistyped.";
+  } else if (status === 429 || type === "rate_limit_error") {
+    message =
+      "Your Anthropic account hit its rate limit. Wait a moment and try again, " +
+      "or raise the limit in the Anthropic console.";
+  } else if (
+    status === 400 &&
+    /credit|billing|quota/i.test(err?.message || "")
+  ) {
+    message =
+      "Your Anthropic account is out of credit. Top it up in the Anthropic " +
+      "console and try again.";
+  }
+
+  if (!message) return err;
+
+  const wrapped = new Error(message);
+  wrapped.statusCode = 402;
+  wrapped.code = "CUSTOMER_KEY_PROBLEM";
+  wrapped.cause = err;
+  return wrapped;
+}
+
 /**
  * Wrap an Anthropic client so every `messages.create` writes a usage row.
  *
@@ -120,7 +157,12 @@ function meter(client, baseCtx = {}) {
               const value = Reflect.get(mTarget, mProp, mReceiver);
               if (mProp !== "create" || typeof value !== "function") return value;
               return async (...args) => {
-                const resp = await value.apply(mTarget, args);
+                let resp;
+                try {
+                  resp = await value.apply(mTarget, args);
+                } catch (err) {
+                  throw explain(err, ctx);
+                }
                 // Fire and forget: the caller is waiting on the model's answer,
                 // not on our bookkeeping.
                 record(ctx, resp?.usage, resp?.model || args[0]?.model).catch(

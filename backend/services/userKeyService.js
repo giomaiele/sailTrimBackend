@@ -1,26 +1,58 @@
 const Anthropic = require("@anthropic-ai/sdk");
 const User = require("../model/userModel.js");
+const Company = require("../model/companyModel.js");
 const { decrypt } = require("./secretCrypto.js");
 const aiUsage = require("./aiUsageService.js");
 
-// The customer's OWN Anthropic key, when they've set one. Two things follow
-// from that: their code is read by THEIR Claude account (the answer to "does
-// Olivia keep our source?"), and the tokens are billed to them, not to us.
+// Whose Anthropic account pays for a piece of work.
 //
-// Metered all the same — spend we don't pay for is still the number that says
-// whether a customer is expensive, and it's what makes "bring your own key"
-// visible as a discount rather than a blind spot.
-async function getUserAnthropicClient(userId) {
-  if (!userId) return null;
-  const user = await User.findById(userId).select("anthropicKeyEncrypted companyId");
-  if (!user?.anthropicKeyEncrypted) return null;
-  const apiKey = decrypt(user.anthropicKeyEncrypted);
-  if (!apiKey) return null;
-  return aiUsage.meter(new Anthropic({ apiKey }), {
-    payer: "customer",
-    userId,
-    companyId: user.companyId || null,
-  });
+// Order: the WORKSPACE's key, then the user's own (kept for the people who set
+// one before workspace keys existed), then null — which means the caller falls
+// back to Olivia's platform key and the spend counts against their plan.
+//
+// Company first is the whole point: "bring your own key" is something a company
+// buys, so it has to apply to every member and to the watchers that run with
+// nobody logged in. With the key on the user, half a team's work quietly billed
+// Olivia and the other half billed one employee's personal account.
+function clientFor(apiKey, ctx) {
+  return aiUsage.meter(new Anthropic({ apiKey }), { payer: "customer", ...ctx });
 }
 
-module.exports = { getUserAnthropicClient };
+/**
+ * @param userId     who triggered the work (may be null for background runs)
+ * @param companyId  the workspace it belongs to — pass it whenever it's known
+ */
+async function getAnthropicClientFor({ userId = null, companyId = null } = {}) {
+  let resolvedCompanyId = companyId;
+  let user = null;
+
+  if (userId) {
+    user = await User.findById(userId).select("anthropicKeyEncrypted companyId");
+    if (!resolvedCompanyId) resolvedCompanyId = user?.companyId || null;
+  }
+
+  if (resolvedCompanyId) {
+    const company = await Company.findById(resolvedCompanyId).select(
+      "anthropicKeyEncrypted"
+    );
+    const key = company?.anthropicKeyEncrypted && decrypt(company.anthropicKeyEncrypted);
+    if (key) {
+      return clientFor(key, { userId, companyId: resolvedCompanyId });
+    }
+  }
+
+  const personal = user?.anthropicKeyEncrypted && decrypt(user.anthropicKeyEncrypted);
+  if (personal) {
+    return clientFor(personal, { userId, companyId: resolvedCompanyId });
+  }
+
+  return null;
+}
+
+// The old name, kept so existing call sites keep working. It now checks the
+// workspace key first, which is the fix.
+async function getUserAnthropicClient(userId) {
+  return getAnthropicClientFor({ userId });
+}
+
+module.exports = { getAnthropicClientFor, getUserAnthropicClient };

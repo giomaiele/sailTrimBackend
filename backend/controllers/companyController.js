@@ -310,6 +310,90 @@ const deleteSlackConfig = asyncHandler(async (req, res) => {
   res.json({ slackChannelId: null, slackBotTokenMask: null, hasSlackBotToken: false });
 });
 
+/**
+ * GET /api/company/anthropic-key
+ * Whether the workspace has its own Anthropic key, and its masked tail.
+ */
+const getCompanyAnthropicKey = asyncHandler(async (req, res) => {
+  if (!req.user.companyId) return res.status(400).json({ message: "No company" });
+  const company = await Company.findById(req.user.companyId).select(
+    "anthropicKeyMask"
+  );
+  if (!company) return res.status(404).json({ message: "Company not found" });
+  res.json({
+    anthropicKeyMask: company.anthropicKeyMask || null,
+    hasAnthropicKey: !!company.anthropicKeyMask,
+  });
+});
+
+/**
+ * PUT /api/company/anthropic-key
+ * Set the WORKSPACE's Anthropic key: every member's work and every watcher run
+ * bills that account instead of Olivia's. Owners only — it's a billing
+ * decision, and a member shouldn't be able to redirect the company's spend.
+ */
+const saveCompanyAnthropicKey = asyncHandler(async (req, res) => {
+  if (req.user.role !== "owner") {
+    return res
+      .status(403)
+      .json({ message: "Only owners can set the workspace's Anthropic key" });
+  }
+  if (!req.user.companyId) return res.status(400).json({ message: "No company" });
+  const apiKey = String(req.body?.apiKey || "").trim();
+  if (!apiKey) return res.status(400).json({ message: "apiKey is required" });
+
+  const company = await Company.findById(req.user.companyId);
+  if (!company) return res.status(404).json({ message: "Company not found" });
+
+  company.anthropicKeyEncrypted = encrypt(apiKey);
+  company.anthropicKeyMask = maskSecret(apiKey);
+  company.anthropicKeySetBy = req.user._id;
+  await company.save();
+
+  await logEvent({
+    event: "company_anthropic_key_saved",
+    req,
+    user: req.user,
+    targetType: "Company",
+    targetId: String(company._id),
+  });
+
+  res.json({
+    anthropicKeyMask: company.anthropicKeyMask,
+    hasAnthropicKey: true,
+  });
+});
+
+/**
+ * DELETE /api/company/anthropic-key
+ * Back to Olivia's key — and back to the plan's budget.
+ */
+const deleteCompanyAnthropicKey = asyncHandler(async (req, res) => {
+  if (req.user.role !== "owner") {
+    return res
+      .status(403)
+      .json({ message: "Only owners can change the workspace's Anthropic key" });
+  }
+  if (!req.user.companyId) return res.status(400).json({ message: "No company" });
+  const company = await Company.findById(req.user.companyId);
+  if (!company) return res.status(404).json({ message: "Company not found" });
+
+  company.anthropicKeyEncrypted = undefined;
+  company.anthropicKeyMask = undefined;
+  company.anthropicKeySetBy = undefined;
+  await company.save();
+
+  await logEvent({
+    event: "company_anthropic_key_removed",
+    req,
+    user: req.user,
+    targetType: "Company",
+    targetId: String(company._id),
+  });
+
+  res.json({ anthropicKeyMask: null, hasAnthropicKey: false });
+});
+
 module.exports = {
   getMyCompany,
   listMembers,
@@ -321,4 +405,7 @@ module.exports = {
   getSlackConfig,
   saveSlackConfig,
   deleteSlackConfig,
+  getCompanyAnthropicKey,
+  saveCompanyAnthropicKey,
+  deleteCompanyAnthropicKey,
 };

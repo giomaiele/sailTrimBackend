@@ -7,7 +7,7 @@ const apiQAService = require("./apiQAService");
 const prDiff = require("./prDiffService");
 const usageLimit = require("./usageLimitService");
 const aiUsage = require("./aiUsageService");
-const { getUserAnthropicClient } = require("./userKeyService");
+const { getAnthropicClientFor } = require("./userKeyService");
 
 // The watcher agent.
 //
@@ -285,9 +285,13 @@ async function runClaimed(run, watcher) {
     });
     let edited = contractEdited;
 
-    const anthropicClient = watcher.userId
-      ? await getUserAnthropicClient(watcher.userId).catch(() => null)
-      : null;
+    // The workspace's key, not the key of whoever happened to create the
+    // watcher — a run fires with nobody logged in, and it must bill the company
+    // that bought "bring your own key".
+    const anthropicClient = await getAnthropicClientFor({
+      userId: watcher.userId,
+      companyId: watcher.companyId,
+    }).catch(() => null);
 
     // 3c) Touched by the diff. The PR diff is the only thing that knows what
     // the code actually changed, so when it was read in full it DECIDES: only

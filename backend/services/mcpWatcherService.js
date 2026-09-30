@@ -10,7 +10,7 @@ const mcpToolSuites = require("./mcpToolSuiteService.js");
 const prDiff = require("./prDiffService.js");
 const usageLimit = require("./usageLimitService.js");
 const aiUsage = require("./aiUsageService.js");
-const { getUserAnthropicClient } = require("./userKeyService.js");
+const { getAnthropicClientFor } = require("./userKeyService.js");
 
 // The MCP watcher agent — the counterpart of watcherService for APIs.
 //
@@ -256,9 +256,13 @@ async function runClaimed(run, watcher) {
       ? mcpProjects.publicServerUrl(config?.url)
       : "the MCP server";
 
-    const anthropicClient = watcher.userId
-      ? await getUserAnthropicClient(watcher.userId).catch(() => null)
-      : null;
+    // The workspace's key, not the key of whoever happened to create the
+    // watcher — a run fires with nobody logged in, and it must bill the company
+    // that bought "bring your own key".
+    const anthropicClient = await getAnthropicClientFor({
+      userId: watcher.userId,
+      companyId: watcher.companyId,
+    }).catch(() => null);
 
     // Read the PR diff FIRST. It tells us which existing tools the merge
     // touched (any change, not only schema) and whether it can change the
