@@ -6,6 +6,7 @@ const Company = require("../model/companyModel");
 const CompanyInvite = require("../model/companyInviteModel");
 const User = require("../model/userModel");
 const { encrypt, maskSecret } = require("../services/secretCrypto");
+const { logEvent } = require("../services/auditLogger");
 
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://www.oliviatools.co";
 const FROM_EMAIL = process.env.MAIL_FROM_EMAIL;
